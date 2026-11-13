@@ -1,0 +1,103 @@
+# Workflow reutilizable: cada repo de una empresa lo llama desde su propio workflow (ver examples/qa-caller.yml).
+name: QA agent
+
+on:
+  workflow_call:
+    inputs:
+      qa-agent-repo:
+        description: Repositorio del agente (owner/nombre). Por defecto, el mismo dueño que el repo que llama.
+        type: string
+        default: ""
+      qa-agent-ref:
+        description: Rama, etiqueta o commit del agente. Fijá una versión estable en producción.
+        type: string
+        default: main
+      fail-on:
+        description: "block | inconclusive | never"
+        type: string
+        default: block
+      analyst:
+        description: Agrega el análisis con IA (requiere el secreto ANTHROPIC_API_KEY)
+        type: boolean
+        default: false
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Mínimo privilegio: solo leer el código y comentar en el PR.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Código del proyecto
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hace falta el historial para el diff y para leer el perfil de la rama base
+
+      - name: Código del agente
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.qa-agent-repo != '' && inputs.qa-agent-repo || format('{0}/qa-agent', github.repository_owner) }}
+          ref: ${{ inputs.qa-agent-ref }}
+          path: .qa-agent-src
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Instalar el agente
+        run: pip install "./.qa-agent-src[web,llm]"
+
+      - name: Correr QA
+        id: qa
+        env:
+          # La clave solo llega al paso del agente; los comandos del proyecto corren con el entorno reducido.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Valores por variables de entorno (no dentro del script): evita inyección por nombres de rama/inputs.
+          FAIL_ON: ${{ inputs.fail-on }}
+          USE_ANALYST: ${{ inputs.analyst }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          args=(--output-dir qa-report --fail-on "$FAIL_ON")
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            args+=(--profile-ref "origin/$BASE_REF" --diff-base "origin/$BASE_REF")
+          fi
+          if [ "$USE_ANALYST" = "true" ]; then args+=(--analyst); fi
+          qa-agent ci . "${args[@]}"
+
+      - name: Comentar en el PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('qa-report/comment.md') != ''
+        # En PRs desde forks el token es de solo lectura: el comentario puede fallar sin romper el job.
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('qa-report/comment.md', 'utf8');
+            const marker = '<!-- qa-agent-report -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const previous = comments.find(c => c.body && c.body.startsWith(marker));
+            if (previous) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Guardar evidencia
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: qa-report/
+          if-no-files-found: ignore

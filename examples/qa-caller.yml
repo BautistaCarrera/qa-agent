@@ -1,0 +1,20 @@
+# Copiá este archivo como .github/workflows/qa.yml en el repo de cada proyecto.
+name: QA
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  qa:
+    # Cambiá OWNER por el dueño del repo qa-agent y fijá una versión (@v1, un commit) en producción.
+    uses: OWNER/qa-agent/.github/workflows/qa.yml@main
+    with:
+      fail-on: block      # block | inconclusive | never
+      analyst: false      # true agrega el análisis con IA (requiere el secreto ANTHROPIC_API_KEY)
+    # secrets:
+    #   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
