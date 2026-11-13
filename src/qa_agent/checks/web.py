@@ -8,6 +8,9 @@ Todo es opcional y se activa solo para proyectos de tipo `web` con la sección `
       pages: ["/"]                   # rutas a revisar
       thresholds: {performance: 80, accessibility: 90, best-practices: 90, seo: 90}
       lighthouse: {enabled: true, presets: [mobile, desktop]}
+      ignore:                        # ruido conocido, declarado y revisado en el perfil (se informa cuánto se ignoró)
+        urls: ["/_vercel/"]          # recursos/peticiones cuya URL contenga alguno de estos textos
+        console: []                  # errores de consola cuyo texto contenga alguno de estos textos
       flows:                         # pasos declarativos (nunca JavaScript arbitrario)
         - name: el menú lleva a Proyectos
           steps:
@@ -57,6 +60,8 @@ def web_config(ctx: Context) -> dict:
     cfg.setdefault("pages", ["/"])
     cfg.setdefault("flows", [])
     cfg["thresholds"] = {**DEFAULT_THRESHOLDS, **(cfg.get("thresholds") or {})}
+    ign = cfg.get("ignore") or {}
+    cfg["ignore"] = {"urls": list(ign.get("urls") or []), "console": list(ign.get("console") or [])}
     cfg["lighthouse"] = {"enabled": True, "presets": ["mobile", "desktop"], **(cfg.get("lighthouse") or {})}
     return cfg
 
@@ -194,7 +199,7 @@ def run_smoke(ctx: Context) -> dict:
     """Una sola sesión de navegador alimenta `web-load` y `web-quality` (se cachea en el contexto)."""
     if "smoke" in ctx.cache:
         return ctx.cache["smoke"]
-    out: dict = {"load": [], "quality": [], "evidence": [], "error": None, "pages_ok": 0}
+    out: dict = {"load": [], "quality": [], "evidence": [], "error": None, "pages_ok": 0, "ignored": 0}
     ctx.cache["smoke"] = out
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -221,14 +226,36 @@ def run_smoke(ctx: Context) -> dict:
                     "e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI));"
                 )
                 page = context.new_page()
-                console_errors: list[str] = []
+                console_errors: list[tuple[str, str]] = []  # (texto, URL del origen)
                 page_errors: list[str] = []
                 bad_responses: list[str] = []
                 failed: list[str] = []
-                page.on("console", lambda m, acc=console_errors: acc.append(m.text) if m.type == "error" else None)
+                ign_urls, ign_console = cfg["ignore"]["urls"], cfg["ignore"]["console"]
+
+                def is_ignored_url(url: str) -> bool:
+                    return any(p in url for p in ign_urls)
+
+                def on_console(m, acc=console_errors):
+                    if m.type == "error":
+                        acc.append((m.text, (m.location or {}).get("url", "")))
+
+                def on_response(r, acc=bad_responses):
+                    if r.status >= 400:
+                        if is_ignored_url(r.url):
+                            out["ignored"] += 1
+                        else:
+                            acc.append(f"{r.status} {r.url}")
+
+                def on_failed(r, acc=failed):
+                    if is_ignored_url(r.url):
+                        out["ignored"] += 1
+                    else:
+                        acc.append(f"{r.url} ({r.failure})")
+
+                page.on("console", on_console)
                 page.on("pageerror", lambda e, acc=page_errors: acc.append(str(e)))
-                page.on("response", lambda r, acc=bad_responses: acc.append(f"{r.status} {r.url}") if r.status >= 400 else None)
-                page.on("requestfailed", lambda r, acc=failed: acc.append(f"{r.url} ({r.failure})"))
+                page.on("response", on_response)
+                page.on("requestfailed", on_failed)
 
                 for path in cfg["pages"]:
                     label = f"[{vp_name}] {path}"
@@ -251,8 +278,15 @@ def run_smoke(ctx: Context) -> dict:
                     audit = page.evaluate(_PAGE_AUDIT_JS)
                     csp = page.evaluate("window.__csp || []")
                     q = out["quality"]
-                    if console_errors:
-                        q.append(f"{label}: {len(console_errors)} error(es) en la consola, p. ej. «{console_errors[0][:140]}»")
+                    kept = []
+                    for text, src in console_errors:
+                        # Una URL ignorada también cuenta si aparece dentro del texto del mensaje.
+                        if is_ignored_url(src) or is_ignored_url(text) or any(p in text for p in ign_console):
+                            out["ignored"] += 1
+                        else:
+                            kept.append(text)
+                    if kept:
+                        q.append(f"{label}: {len(kept)} error(es) en la consola, p. ej. «{kept[0][:140]}»")
                     if csp:
                         q.append(f"{label}: violaciones de CSP: {', '.join(sorted(set(csp))[:3])}")
                     own_bad = [r for r in bad_responses if host in r or r.split(" ", 1)[1].startswith(base)]
@@ -321,10 +355,16 @@ def check_web_quality(ctx: Context) -> CheckResult:
     smoke = run_smoke(ctx)
     if smoke["error"] and not smoke["quality"]:
         return CheckResult("web-quality", SKIPPED, smoke["error"], "normal")
+    ign = web_config(ctx)["ignore"]
+    note = ""
+    if smoke["ignored"]:
+        note = (f" ({smoke['ignored']} evento(s) conocidos ignorados por el perfil: "
+                f"{', '.join(ign['urls'] + ign['console'])})")
     if smoke["quality"]:
-        return CheckResult("web-quality", FAIL, f"{len(smoke['quality'])} problema(s) de calidad", "normal",
+        return CheckResult("web-quality", FAIL, f"{len(smoke['quality'])} problema(s) de calidad{note}", "normal",
                            findings=smoke["quality"])
-    return CheckResult("web-quality", PASS, "consola, red, enlaces, imágenes y accesibilidad básica sin problemas", "normal")
+    return CheckResult("web-quality", PASS,
+                       "consola, red, enlaces, imágenes y accesibilidad básica sin problemas" + note, "normal")
 
 
 # --------------------------------------------------------------------------- flujos declarativos

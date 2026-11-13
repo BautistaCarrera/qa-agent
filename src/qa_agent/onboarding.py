@@ -108,6 +108,8 @@ def _node(root: Path, names: set, files: list, profile: Profile) -> None:
         profile.kind = "library"
     if profile.kind == "web":
         profile.web = _web_defaults(pm, scripts, deps)
+        if profile.web.get("ignore"):
+            profile.notes.append("Se detectó Vercel Analytics: el perfil ignora /_vercel/ (no existe fuera de Vercel).")
     if not profile.commands.get("test"):
         profile.notes.append("El proyecto Node no define tests automatizados.")
 
@@ -121,7 +123,11 @@ def _web_defaults(pm: str, scripts: dict, deps: dict) -> dict:
         start = [pm, "run", "preview", "--", "--port", "{port}", "--host", "127.0.0.1"]
     elif "start" in scripts:
         start = [pm, "start"]  # el puerto se pasa por la variable PORT
-    return {"url": None, "start": start, "pages": ["/"], "flows": []}
+    web = {"url": None, "start": start, "pages": ["/"], "flows": []}
+    if deps.keys() & {"@vercel/analytics", "@vercel/speed-insights"}:
+        # Los scripts de Vercel solo existen en el despliegue: en local dan 404 y no son un defecto.
+        web["ignore"] = {"urls": ["/_vercel/"], "console": []}
+    return web
 
 
 def _python(root: Path, names: set, files: list, profile: Profile) -> None:

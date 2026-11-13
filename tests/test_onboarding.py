@@ -21,6 +21,18 @@ class OnboardingTests(TmpCase):
         self.assertEqual(p.commands["audit"], ["npm", "audit", "--omit=dev"])
         self.assertFalse(p.approved)
 
+    def test_vercel_analytics_propone_ignorar_sus_scripts(self):
+        d = self.make_project("va", {"package.json": json.dumps({
+            "scripts": {"build": "x", "start": "x"}, "dependencies": {"next": "16", "@vercel/analytics": "1"}})})
+        p = onboarding.detect(d, "acme", "va")
+        self.assertEqual(p.web["ignore"]["urls"], ["/_vercel/"])
+        self.assertTrue(any("Vercel Analytics" in n for n in p.notes))
+
+    def test_sin_vercel_no_se_ignora_nada(self):
+        d = self.make_project("nv", {"package.json": json.dumps({
+            "scripts": {"build": "x", "start": "x"}, "dependencies": {"next": "16"}})})
+        self.assertNotIn("ignore", onboarding.detect(d, "acme", "nv").web)
+
     def test_no_reinstala_si_node_modules_existe(self):
         d = self.make_project("web2", {"package.json": json.dumps({"scripts": {"build": "x"}})})
         (d / "node_modules").mkdir()

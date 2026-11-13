@@ -16,6 +16,10 @@ GOOD = """<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Siti
 <div id="m" hidden>Menú abierto</div></section></body></html>"""
 LAZY = ("<!doctype html><html lang='es'><head><title>Lazy</title><link rel='icon' href='data:,'></head><body><h1>Lazy</h1>"
         "<div style='height:4000px'></div><img alt='tarde' loading='lazy' src='/img.gif'></body></html>")
+NOISY = ("<!doctype html><html lang='es'><head><title>Ruido</title><link rel='icon' href='data:,'>"
+         "<script src='/_vercel/insights/script.js'></script>"
+         "<script>console.error(\"Refused to execute script from 'http://x/_vercel/insights/script.js' (MIME)\")</script>"
+         "</head><body><h1>Ruido</h1></body></html>")
 OTHER = '<!doctype html><html lang="es"><head><title>Otra</title><link rel="icon" href="data:,"></head><body><h1>Otra</h1></body></html>'
 BAD = """<!doctype html><html><head></head><body>
 <h1>Uno</h1><h1>Dos</h1><a href="#no-existe">Roto</a> <a href="/falta.html">Link muerto</a> <a href="/o"></a>
@@ -149,6 +153,19 @@ class BrowserTests(WebCase):
             ctx.base_url = url
             quality = web.check_web_quality(ctx)
         self.assertEqual(quality.status, PASS, quality.findings)
+
+    def test_ruido_conocido_se_ignora_solo_si_el_perfil_lo_declara(self):
+        d, profile = self.site("bnoise", {"index.html": NOISY})
+        ctx = self.ctx(d, profile)
+        with web.target(ctx) as url:
+            ctx.base_url = url
+            sin = web.check_web_quality(ctx)
+            ctx.cache.clear()
+            profile.web["ignore"] = {"urls": ["/_vercel/"]}
+            con = web.check_web_quality(ctx)
+        self.assertEqual(sin.status, FAIL)
+        self.assertEqual(con.status, PASS, con.findings)
+        self.assertIn("ignorados por el perfil", con.summary)  # nunca se oculta que se ignoró algo
 
     def test_pagina_inexistente_bloquea(self):
         d, profile = self.site("b404", {"index.html": GOOD})
