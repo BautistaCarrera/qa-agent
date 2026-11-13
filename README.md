@@ -123,3 +123,7 @@ Escribí una función `(Context) -> CheckResult` en `src/qa_agent/checks/` y reg
 python3 -m venv .venv && .venv/bin/pip install -e '.[web]'
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -t .   # con Python sin Playwright, los 6 tests de navegador se omiten
 ```
+
+## Licencia
+
+MIT. Ver [LICENSE](LICENSE).
